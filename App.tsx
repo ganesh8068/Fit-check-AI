@@ -174,122 +174,116 @@ export default function App() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     
+    // Safety checks before processing
     if (video && canvas && poseLandmarker) {
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // 1. Setup Canvas
-        if (canvas.width !== video.videoWidth) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-        }
+      // Ensure video has loaded data and has dimensions
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          // 1. Setup Canvas
+          if (canvas.width !== video.videoWidth) {
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+          }
 
-        // 2. Draw Video Background
-        ctx.save();
-        // Mirror the video to feel like a mirror
-        ctx.translate(canvas.width, 0);
-        ctx.scale(-1, 1);
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        ctx.restore();
+          // 2. Draw Video Background
+          ctx.save();
+          // Mirror the video to feel like a mirror
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.restore();
 
-        // 3. Detect Pose
-        const startTimeMs = performance.now();
-        const result = poseLandmarker.detectForVideo(video, startTimeMs);
+          // 3. Detect Pose
+          const startTimeMs = performance.now();
+          let result = null;
+          try {
+             result = poseLandmarker.detectForVideo(video, startTimeMs);
+          } catch (error) {
+             // Suppress momentary tracking errors to prevent crash loop
+             console.debug("Pose tracking skipped frame:", error);
+          }
 
-        // 4. Draw Clothes
-        if (result.landmarks && result.landmarks.length > 0) {
-          const landmarks = result.landmarks[0]; // First detected person
-          
-          // Calculate Body Metrics
-          const leftShoulder = landmarks[LANDMARK_LEFT_SHOULDER];
-          const rightShoulder = landmarks[LANDMARK_RIGHT_SHOULDER];
-          const leftHip = landmarks[LANDMARK_LEFT_HIP];
-          const rightHip = landmarks[LANDMARK_RIGHT_HIP];
-
-          // Mirror x coordinates because we mirrored the canvas draw
-          // Actually MediaPipe coordinates are normalized 0-1 relative to the image source.
-          // Since we flipped the video draw, we need to treat x as (1-x) for rendering on the flipped context, 
-          // OR draw items normally on top if we didn't flip context for them.
-          // Let's keep it simple: We flipped the context to draw video. Let's flip it back or use 1-x.
-          // To simplify calculations, let's work in unmirrored space for math, then render mirrored.
-          
-          const shoulderWidth = Math.sqrt(
-            Math.pow((leftShoulder.x - rightShoulder.x) * canvas.width, 2) +
-            Math.pow((leftShoulder.y - rightShoulder.y) * canvas.height, 2)
-          );
-
-          // Torso Angle (for rotation) - atan2(dy, dx)
-          const angleRad = Math.atan2(
-            rightShoulder.y - leftShoulder.y,
-            rightShoulder.x - leftShoulder.x
-          ); 
-          // Note: MediaPipe Right is detecting person's right (left on screen).
-          
-          // Center Points
-          const shoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2;
-          const shoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2;
-          const hipCenterX = (leftHip.x + rightHip.x) / 2;
-          const hipCenterY = (leftHip.y + rightHip.y) / 2;
-
-          activeItems.forEach(item => {
-            const img = activeItemImagesRef.current.get(item.id);
-            if (!img) {
-               // Lazy load if missing from ref (edge case)
-               const newImg = new Image();
-               newImg.src = item.imageUrl;
-               activeItemImagesRef.current.set(item.id, newImg);
-               return; 
-            }
-
-            // Determine Anchor Point
-            let anchorX = shoulderCenterX;
-            let anchorY = shoulderCenterY;
-            let baseScale = shoulderWidth * 2.5; // Heuristic: Shirt is ~2.5x detected shoulder width
-
-            if (item.category === 'BOTTOM') {
-              anchorX = hipCenterX;
-              anchorY = hipCenterY;
-              baseScale = shoulderWidth * 1.8;
-            } else if (item.category === 'DRESS') {
-              // Between shoulders and hips but higher
-              anchorY = shoulderCenterY + (hipCenterY - shoulderCenterY) * 0.2; 
-            }
-
-            // Apply transformations
-            const finalWidth = baseScale * item.scale;
-            const aspectRatio = img.naturalWidth / img.naturalHeight;
-            const finalHeight = finalWidth / aspectRatio;
-
-            // Render
-            ctx.save();
+          // 4. Draw Clothes
+          if (result && result.landmarks && result.landmarks.length > 0) {
+            const landmarks = result.landmarks[0]; // First detected person
             
-            // Handle Mirroring Logic:
-            // The video is drawn mirrored. We want the clothes to follow the mirrored body.
-            // If landmark.x is 0.2 (left side of source), in mirrored view it is displayed at 0.8.
-            // We should translate to (1 - anchorX) * width.
+            // Calculate Body Metrics
+            const leftShoulder = landmarks[LANDMARK_LEFT_SHOULDER];
+            const rightShoulder = landmarks[LANDMARK_RIGHT_SHOULDER];
+            const leftHip = landmarks[LANDMARK_LEFT_HIP];
+            const rightHip = landmarks[LANDMARK_RIGHT_HIP];
+
+            // Mirror x coordinates because we mirrored the canvas draw
             
-            const screenX = (1 - anchorX) * canvas.width + item.offsetX;
-            const screenY = anchorY * canvas.height + item.offsetY;
+            const shoulderWidth = Math.sqrt(
+              Math.pow((leftShoulder.x - rightShoulder.x) * canvas.width, 2) +
+              Math.pow((leftShoulder.y - rightShoulder.y) * canvas.height, 2)
+            );
 
-            ctx.translate(screenX, screenY);
+            // Torso Angle (for rotation) - atan2(dy, dx)
+            const angleRad = Math.atan2(
+              rightShoulder.y - leftShoulder.y,
+              rightShoulder.x - leftShoulder.x
+            ); 
             
-            // Apply body rotation + manual rotation
-            // We invert angle because of the mirror effect on x-axis logic usually, 
-            // but let's test. Usually MediaPipe rotation works directly if we align axes.
-            // Simplified: Just use manual rotation for MVP, automatic rotation is jittery without smoothing.
-            // Let's add a fraction of body rotation.
-            ctx.rotate(-angleRad + (item.rotation * Math.PI / 180));
+            // Center Points
+            const shoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2;
+            const shoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2;
+            const hipCenterX = (leftHip.x + rightHip.x) / 2;
+            const hipCenterY = (leftHip.y + rightHip.y) / 2;
 
-            // Draw Centered
-            ctx.drawImage(img, -finalWidth / 2, -finalHeight / 2, finalWidth, finalHeight);
+            activeItems.forEach(item => {
+              const img = activeItemImagesRef.current.get(item.id);
+              if (!img) {
+                 // Lazy load if missing from ref (edge case)
+                 const newImg = new Image();
+                 newImg.src = item.imageUrl;
+                 activeItemImagesRef.current.set(item.id, newImg);
+                 return; 
+              }
 
-            // Draw Selection Border (optional visual feedback)
-            // ctx.strokeStyle = "#007AFF";
-            // ctx.lineWidth = 2;
-            // ctx.strokeRect(-finalWidth/2, -finalHeight/2, finalWidth, finalHeight);
+              // Determine Anchor Point
+              let anchorX = shoulderCenterX;
+              let anchorY = shoulderCenterY;
+              let baseScale = shoulderWidth * 2.5; // Heuristic: Shirt is ~2.5x detected shoulder width
 
-            ctx.restore();
-          });
+              if (item.category === 'BOTTOM') {
+                anchorX = hipCenterX;
+                anchorY = hipCenterY;
+                baseScale = shoulderWidth * 1.8;
+              } else if (item.category === 'DRESS') {
+                // Between shoulders and hips but higher
+                anchorY = shoulderCenterY + (hipCenterY - shoulderCenterY) * 0.2; 
+              }
 
+              // Apply transformations
+              const finalWidth = baseScale * item.scale;
+              const aspectRatio = img.naturalWidth / img.naturalHeight;
+              const finalHeight = finalWidth / aspectRatio;
+
+              // Render
+              ctx.save();
+              
+              // Handle Mirroring Logic:
+              // The video is drawn mirrored. We want the clothes to follow the mirrored body.
+              // If landmark.x is 0.2 (left side of source), in mirrored view it is displayed at 0.8.
+              // We should translate to (1 - anchorX) * width.
+              
+              const screenX = (1 - anchorX) * canvas.width + item.offsetX;
+              const screenY = anchorY * canvas.height + item.offsetY;
+
+              ctx.translate(screenX, screenY);
+              
+              // Apply body rotation + manual rotation
+              ctx.rotate(-angleRad + (item.rotation * Math.PI / 180));
+
+              // Draw Centered
+              ctx.drawImage(img, -finalWidth / 2, -finalHeight / 2, finalWidth, finalHeight);
+
+              ctx.restore();
+            });
+          }
         }
       }
     }
@@ -304,10 +298,6 @@ export default function App() {
   }, [renderLoop]);
 
   // --- Interaction: Gestures (Simple version) ---
-  // A robust gesture system on canvas requires raycasting. 
-  // For this prototype, we will implement global sliders/buttons for the "Selected" item
-  // to avoid complex hit-testing code in a single file. 
-  // OR we assume the last added item is selected.
 
   const updateItemTransform = (deltaScale: number, deltaRot: number, deltaX: number, deltaY: number) => {
     if (activeItems.length === 0) return;
@@ -370,7 +360,7 @@ export default function App() {
       {/* Right Side: Queue */}
       <div className={`absolute top-0 right-0 h-full w-24 bg-surface/30 backdrop-blur-sm transition-transform duration-300 z-20 flex flex-col pt-20 pb-4 items-center gap-3 ${queue.length === 0 ? 'translate-x-full' : 'translate-x-0'}`}>
         {queue.map((item, idx) => (
-          <div key={item.id} className="relative group">
+          <div key={item.id} className="relative group pointer-events-auto">
             <img 
               src={item.imageUrl} 
               alt={item.name} 
@@ -491,7 +481,7 @@ export default function App() {
 
       {/* Hamburger Menu Drawer */}
       {isMenuOpen && (
-        <div className="absolute inset-0 z-40 flex">
+        <div className="absolute inset-0 z-40 flex pointer-events-auto">
           <div className="w-80 h-full bg-[#121212] border-r border-gray-800 flex flex-col shadow-2xl animate-in slide-in-from-left duration-300">
             <div className="p-6 border-b border-gray-800 flex justify-between items-center">
               <h2 className="text-xl font-bold text-white tracking-tight">Your Closet</h2>

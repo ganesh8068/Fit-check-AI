@@ -1,0 +1,8 @@
+{
+  "name": "Copy of Virtual Fit AI",
+  "description": "A real-time virtual fitting room using MediaPipe for body tracking and Gemini for intelligent clothing analysis.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
